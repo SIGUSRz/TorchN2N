@@ -1,5 +1,5 @@
 import argparse
-import const
+from const import *
 import os
 from torch.utils.data import DataLoader
 import torch.nn as nn
@@ -10,21 +10,19 @@ from model_shapes.nmn_assembler import Assembler
 
 from model_shapes.end2endModuleNet import *
 from model_shapes.custom_loss import custom_loss
-from global_variables.global_variables import *
-from Utils.data_reader import DataReader
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_id', type=int, default=0)
     parser.add_argument("--model_type", type=str,
-                        choices=[const.model_type_scratch,
-                                 const.model_type_gt,
-                                 const.model_type_gt_rl],
+                        choices=[model_type_scratch,
+                                 model_type_gt,
+                                 model_type_gt_rl],
                         required=True,
-                        help='models:' + const.model_type_scratch + ',' +
-                             const.model_type_gt + ', ' +
-                             const.model_type_gt_rl)
+                        help='models:' + model_type_scratch + ',' +
+                             model_type_gt + ', ' +
+                             model_type_gt_rl)
     parser.add_argument("--model_path", type=str, required=False)
     parser.add_argument("--data_path", type=str, required=True)
     args = parser.parse_args()
@@ -45,8 +43,8 @@ if __name__ == "__main__":
     criterion_layout = custom_loss(lambda_entropy = lambda_entropy)
     criterion_answer = nn.CrossEntropyLoss(size_average=False,reduce=False)
 
-    params = const.HyperParameter(model_type)
-    assembler = Assembler(data_path + const.vocab_layout_file)
+    params = HyperParameter(model_type)
+    assembler = Assembler(data_path + vocab_layout_file)
     dataset = loader.VQAset(data_path, params, assembler)
     data_loader = DataLoader(
         dataset,
