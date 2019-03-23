@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from global_variables.global_variables import use_cuda
+from const import use_cuda
 
 
 class EncoderRNN(nn.Module):
@@ -160,6 +160,8 @@ class AttnDecoderRNN(nn.Module):
         print(encoder_lens)
         if encoder_lens is not None:
             mask = np.ones((batch_size, out_len, seq_len))
+            print(mask.shape)
+            print(len(encoder_lens))
             for i, v in enumerate(encoder_lens):
                 mask[i, :, 0:v] = 0
             mask_tensor = torch.ByteTensor(mask)
