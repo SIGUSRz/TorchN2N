@@ -37,13 +37,15 @@ class N2NModuleNet(nn.Module):
         vision_model = CNN()
         self.vision_model = vision_model.cuda() if use_cuda else vision_model
 
-        # # initiate moduleNet
-        # myModuleNet = module_net(image_height=image_height, image_width=image_width,
-        #                          in_image_dim=in_image_dim,
-        #                          in_text_dim=embed_dim_txt, out_num_choices=num_answer,
-        #                          map_dim=hidden_size)
-        #
-        # self.myModuleNet = myModuleNet.cuda() if use_cuda else myModuleNet
+        # initiate moduleNet
+        mod_net = ModuleNet(image_height=self.hyper.H_im,
+                            image_width=self.hyper.W_im,
+                            image_channel=self.hyper.D_feat,
+                            embed_dim_que=self.hyper.embed_dim_que,
+                            num_answer=2,
+                            lstm_dim=self.hyper.lstm_dim)
+
+        self.mod_net = mod_net.cuda() if use_cuda else mod_net
 
     def forward(self, question_variable, layout_variable,
                 image_batch, seq_len_batch, label_batch,
@@ -51,7 +53,7 @@ class N2NModuleNet(nn.Module):
                 baseline_decay=None):
         batch_size = seq_len_batch.shape[0]
 
-        myLayouts, myAttentions, neg_entropy, log_seq_prob = \
+        predicted_tokens, attentions, neg_entropy, log_seq_prob = \
             self.seq_model(question_variable, seq_len_batch, layout_variable,
                            sample_token)
 
@@ -59,13 +61,13 @@ class N2NModuleNet(nn.Module):
         if layout_variable is not None:
             layout_loss = torch.mean(-log_seq_prob)
 
-        predicted_layouts = np.asarray(myLayouts.cpu().data.numpy())
+        predicted_layouts = np.asarray(predicted_tokens.cpu().data.numpy())
         expr_list, expr_validity_array = self.assembler.assemble(predicted_layouts)
 
-        ## group samples based on layout
+        # group samples based on layout
         sample_groups_by_layout = unique_columns(predicted_layouts)
 
-        ##run moduleNet
+        # run moduleNet
         answer_losses = None
         policy_gradient_losses = None
         avg_answer_loss = None
@@ -81,32 +83,32 @@ class N2NModuleNet(nn.Module):
             if expr_validity_array[first_in_group]:
                 layout_exp = expr_list[first_in_group]
 
-                if label_batch is None:
-                    ith_answer_variable = None
-                else:
-                    ith_answer = label_batch[sample_group]
-                    ith_answer_variable = Variable(torch.LongTensor(ith_answer))
-                    ith_answer_variable = ith_answer_variable.cuda() if use_cuda else ith_answer_variable
-                textAttention = myAttentions[sample_group, :]
+                ith_answer = label_batch[sample_group]
+                ith_answer_variable = Variable(ith_answer.long())
+                ith_answer_variable = ith_answer_variable.cuda() \
+                    if use_cuda else ith_answer_variable
+                que_attention = attentions[sample_group, :]
 
                 ith_image = image_batch[sample_group, :, :, :]
                 ith_images_variable = Variable(torch.FloatTensor(ith_image))
-                ith_images_variable = ith_images_variable.cuda() if use_cuda else ith_images_variable
+                ith_images_variable = ith_images_variable.cuda() \
+                    if use_cuda else ith_images_variable
 
-                ##image[batch_size, H_feat, W_feat, D_feat] ==> [batch_size, D_feat, W_feat, H_feat] for conv2d
+                # image[batch_size, H_feat, W_feat, D_feat] ==>
+                # [batch_size, D_feat, W_feat, H_feat] for conv2d
                 # ith_images_variable = ith_images_variable.permute(0, 3, 1, 2)
 
                 ith_images_variable = ith_images_variable.contiguous()
 
-                myAnswers = self.myModuleNet(input_image_variable=ith_images_variable,
-                                             input_text_attention_variable=textAttention,
-                                             target_answer_variable=ith_answer_variable,
-                                             expr_list=layout_exp)
-                current_answer[sample_group] = torch.topk(myAnswers, 1)[1].cpu().data.numpy()[:, 0]
+                answers = self.mod_net(input_image_variable=ith_images_variable,
+                                       input_text_attention_variable=que_attention,
+                                       target_answer_variable=ith_answer_variable,
+                                       expr_list=layout_exp)
+                current_answer[sample_group] = torch.topk(answers, 1)[1].cpu().data.numpy()[:, 0]
 
-                ##compute loss function only when answer is provided
+                # compute loss function only when answer is provided
                 if ith_answer_variable is not None:
-                    current_answer_loss = self.answer_criterion(myAnswers, ith_answer_variable)
+                    current_answer_loss = self.answer_criterion(answers, ith_answer_variable)
                     sample_group_tensor = torch.cuda.LongTensor(
                         sample_group) if use_cuda else torch.LongTensor(sample_group)
 
@@ -126,10 +128,11 @@ class N2NModuleNet(nn.Module):
 
         try:
             if label_batch is not None:
-                total_loss, avg_answer_loss = self.layout_criterion(neg_entropy=neg_entropy,
-                                                                    answer_loss=answer_losses,
-                                                                    policy_gradient_losses=policy_gradient_losses,
-                                                                    layout_loss=layout_loss)
+                total_loss, avg_answer_loss = \
+                    self.layout_criterion(neg_entropy=neg_entropy,
+                                          answer_loss=answer_losses,
+                                          policy_gradient_losses=policy_gradient_losses,
+                                          layout_loss=layout_loss)
                 ##update layout policy baseline
                 avg_sample_loss = torch.mean(answer_losses)
                 avg_sample_loss_value = avg_sample_loss.cpu().data.numpy()[0]

@@ -189,6 +189,8 @@ class AttnDecoderRNN(nn.Module):
             self.batch_size, 3).contiguous()
 
         next_state = next_state.cuda() if use_cuda else next_state
+        predicted_tokens = None
+        context_total = None
         while step < self.max_decoder_len:
             predicted_token, previous_hidden, context, neg_entropy, log_seq_prob = \
                 self._decode_step(step=step,
@@ -213,7 +215,6 @@ class AttnDecoderRNN(nn.Module):
 
             step += 1
             embed_token = self.embedding(predicted_token)
-            loop_state = torch.ne(predicted_token, self.EOS_token).any()
 
         return predicted_tokens, context_total, total_neg_entropy, total_seq_prob
 
