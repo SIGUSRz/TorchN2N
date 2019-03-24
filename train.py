@@ -5,10 +5,9 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.optim as optim
 import data.loader as loader
-from model_shapes.vision_model import CNN
 from model_shapes.nmn_assembler import Assembler
 
-from model_shapes.end2endModuleNet import *
+from model_shapes.nmn_module_net import *
 from model_shapes.custom_loss import custom_loss
 
 if __name__ == "__main__":
@@ -48,79 +47,56 @@ if __name__ == "__main__":
         shuffle=True
     )
 
-    vision = CNN()
-    loss = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(vision.parameters(), lr=params.learning_rate)
-
     lambda_entropy = 0
 
     criterion_layout = custom_loss(lambda_entropy=lambda_entropy)
     criterion_answer = nn.CrossEntropyLoss(size_average=False, reduce=False)
-    myModel = end2endModuleNet(num_vocab_txt=dataset.vocab.num_vocab,
-                               num_vocab_nmn=assembler.num_module,
-                               out_num_choices=2,
-                               embed_dim_nmn=params.embed_dim_nmn,
-                               embed_dim_txt=params.embed_dim_txt,
-                               image_height=params.H_im, image_width=params.W_im,
-                               in_image_dim=params.D_feat,
-                               hidden_size=params.lstm_dim, assembler=assembler,
-                               layout_criterion=criterion_layout,
-                               max_layout_len=params.T_encoder,
-                               answer_criterion=criterion_answer,
-                               num_layers=params.num_layers,
-                               decoder_dropout=0)
+    n2nmn = N2NModuleNet(num_que_vocab=dataset.vocab.num_vocab,
+                         num_answer=2,
+                         hyper=params,
+                         assembler=assembler,
+                         layout_criterion=criterion_layout,
+                         answer_criterion=criterion_answer)
 
-    myOptimizer = optim.Adam(myModel.parameters(), weight_decay=params.weight_decay,
-                             lr=params.learning_rate)
+    n2n_optimizer = optim.Adam(n2nmn.parameters(), weight_decay=params.weight_decay,
+                               lr=params.learning_rate)
 
     avg_accuracy = 0
     accuracy_decay = 0.99
     avg_layout_accuracy = 0
     updated_baseline = np.log(28)
 
-    for batch_idx, (image_batch, seq_len_batch, gt_layout_batch, label_batch, input_seq_batch) in \
+    for batch_idx, (image_batch, seq_len_batch, gt_layout_batch, label_batch, question_batch) in \
             enumerate(data_loader):
-        optimizer.zero_grad()
-        print(image_batch.size())
-        input_images = vision(image_batch)
-
-        print(input_images.size())
-
-        _, n_sample = input_seq_batch.shape
-        input_text_seq_lens = seq_len_batch
-        input_text_seqs = input_seq_batch
-        input_layouts = gt_layout_batch
-        input_answers = label_batch
 
         n_correct_layout = 0
         n_correct_answer = 0
-        print(input_text_seqs)
-        input_txt_variable = Variable(torch.LongTensor((input_text_seqs.long())))
-        input_txt_variable = input_txt_variable.cuda() if use_cuda else input_txt_variable
+        question_variable = Variable(torch.LongTensor((question_batch.long())))
+        question_variable = question_variable.cuda() if use_cuda else question_variable
 
-        input_layout_variable = None
-
+        gt_layout_variable = None
         if model_type == model_type_gt:
-            input_layout_variable = Variable(torch.LongTensor((input_layouts.long())))
-            input_layout_variable = input_layout_variable.cuda() if use_cuda else input_layout_variable
+            gt_layout_variable = Variable(torch.LongTensor((gt_layout_batch.long())))
+            gt_layout_variable = gt_layout_variable.cuda() if use_cuda else gt_layout_variable
 
-        myOptimizer.zero_grad()
+        n2n_optimizer.zero_grad()
 
-        total_loss, avg_answer_loss, myAnswer, predicted_layouts, expr_validity_array, updated_baseline \
-            = myModel(input_txt_variable=input_txt_variable,
-                      input_text_seq_lens=input_text_seq_lens,
-                      input_answers=input_answers, input_images=input_images,
-                      policy_gradient_baseline=updated_baseline,
-                      baseline_decay=params.baseline_decay,
-                      input_layout_variable=input_layout_variable,
-                      sample_token=params.decoder_sampling
-                      )
+        total_loss, avg_answer_loss, myAnswer, predicted_layouts, \
+        expr_validity_array, updated_baseline = n2nmn(
+            question_variable=question_variable,
+            layout_variable=gt_layout_variable,
+            image_batch=image_batch,
+            seq_len_batch=seq_len_batch,
+            label_batch=label_batch,
+            baseline_decay=params.baseline_decay,
+            sample_token=params.decoder_sampling
+        )
 
         if total_loss is not None:
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm(myModel.parameters(), max_grad_l2_norm)
+            torch.nn.utils.clip_grad_norm(n2nmn.parameters(), max_grad_l2_norm)
 
-        myOptimizer.step()
+        n2n_optimizer.step()
 
         layout_accuracy = np.mean(np.all(predicted_layouts == input_layouts, axis=0))
         avg_layout_accuracy += (1 - accuracy_decay) * (layout_accuracy - avg_layout_accuracy)
@@ -142,6 +118,6 @@ if __name__ == "__main__":
         # Save snapshot
         if (i_iter + 1) % snapshot_interval == 0 or (i_iter + 1) == max_iter:
             model_snapshot_file = os.path.join(snapshot_dir, "model_%08d" % (i_iter + 1))
-            torch.save(myModel, model_snapshot_file)
+            torch.save(n2nmn, model_snapshot_file)
             print('snapshot saved to ' + model_snapshot_file)
             sys.stdout.flush()

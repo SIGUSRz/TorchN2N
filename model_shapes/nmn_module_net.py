@@ -1,61 +1,62 @@
 import torch
 import torch.nn as nn
 import sys
-from model_shapes.Attention2 import *
+from model_shapes.nmn_att_seq import *
 from model_shapes.module_net import *
+from model_shapes.vision_model import CNN
 from Utils.utils import unique_columns
 
 
-class end2endModuleNet(nn.Module):
-    def __init__(self, num_vocab_txt, num_vocab_nmn, out_num_choices,
-                 embed_dim_nmn, embed_dim_txt, image_height, image_width, in_image_dim,
-                 hidden_size, assembler, layout_criterion, answer_criterion, max_layout_len,
-                 num_layers=1, decoder_dropout=0, **kwarg):
-
-        super(end2endModuleNet, self).__init__()
+class N2NModuleNet(nn.Module):
+    def __init__(self, num_que_vocab, num_answer, hyper, assembler,
+                 layout_criterion, answer_criterion):
+        super(N2NModuleNet, self).__init__()
 
         self.assembler = assembler
         self.layout_criterion = layout_criterion
         self.answer_criterion = answer_criterion
+        self.hyper = hyper
 
-        ##initiate encoder and decoder
-        myEncoder = EncoderRNN(num_vocab_txt, hidden_size, embed_dim_txt, num_layers)
-        myDecoder = AttnDecoderRNN(hidden_size, num_vocab_nmn, embed_dim_nmn,
-                                   max_decoder_len=max_layout_len,
-                                   dropout_p=decoder_dropout, num_layers=num_layers,
-                                   assembler_w=self.assembler.W, assembler_b=self.assembler.b,
-                                   assembler_p=self.assembler.P, EOStoken=self.assembler.EOS_idx)
+        # initiate encoder and decoder
+        encoder = EncoderRNN(input_size=num_que_vocab,
+                             lstm_dim=self.hyper.lstm_dim,
+                             embed_dim_que=self.hyper.embed_dim_que,
+                             num_layers=self.hyper.num_layers)
+        decoder = AttnDecoderRNN(hyper=self.hyper,
+                                 nmn_dim=self.assembler.num_module,
+                                 EOS_token=self.assembler.EOS_idx)
 
         if use_cuda:
-            myEncoder = myEncoder.cuda()
-            myDecoder = myDecoder.cuda()
+            encoder = encoder.cuda()
+            decoder = decoder.cuda()
 
-        ##initatiate attentionSeq2seq
-        mySeq2seq = attention_seq2seq(myEncoder, myDecoder)
-        self.mySeq2seq = mySeq2seq.cuda() if use_cuda else mySeq2seq
+        # initatiate attentionSeq2seq
+        seq_model = Seq2SeqAtt(encoder, decoder)
+        self.seq_model = seq_model.cuda() if use_cuda else seq_model
 
-        ##initiate moduleNet
-        myModuleNet = module_net(image_height=image_height, image_width=image_width,
-                                 in_image_dim=in_image_dim,
-                                 in_text_dim=embed_dim_txt, out_num_choices=out_num_choices,
-                                 map_dim=hidden_size)
+        vision_model = CNN()
+        self.vision_model = vision_model.cuda() if use_cuda else vision_model
 
-        self.myModuleNet = myModuleNet.cuda() if use_cuda else myModuleNet
+        # # initiate moduleNet
+        # myModuleNet = module_net(image_height=image_height, image_width=image_width,
+        #                          in_image_dim=in_image_dim,
+        #                          in_text_dim=embed_dim_txt, out_num_choices=num_answer,
+        #                          map_dim=hidden_size)
+        #
+        # self.myModuleNet = myModuleNet.cuda() if use_cuda else myModuleNet
 
-    def forward(self, input_txt_variable, input_text_seq_lens,
-                input_images, input_answers,
-                input_layout_variable, sample_token, policy_gradient_baseline=None,
+    def forward(self, question_variable, layout_variable,
+                image_batch, seq_len_batch, label_batch,
+                sample_token, policy_gradient_baseline=None,
                 baseline_decay=None):
+        batch_size = seq_len_batch.shape[0]
 
-        batch_size = len(input_text_seq_lens)
-
-        ##run attentionSeq2Seq
         myLayouts, myAttentions, neg_entropy, log_seq_prob = \
-            self.mySeq2seq(input_txt_variable, input_text_seq_lens, input_layout_variable,
+            self.seq_model(question_variable, seq_len_batch, layout_variable,
                            sample_token)
 
         layout_loss = None
-        if input_layout_variable is not None:
+        if layout_variable is not None:
             layout_loss = torch.mean(-log_seq_prob)
 
         predicted_layouts = np.asarray(myLayouts.cpu().data.numpy())
@@ -80,15 +81,15 @@ class end2endModuleNet(nn.Module):
             if expr_validity_array[first_in_group]:
                 layout_exp = expr_list[first_in_group]
 
-                if input_answers is None:
+                if label_batch is None:
                     ith_answer_variable = None
                 else:
-                    ith_answer = input_answers[sample_group]
+                    ith_answer = label_batch[sample_group]
                     ith_answer_variable = Variable(torch.LongTensor(ith_answer))
                     ith_answer_variable = ith_answer_variable.cuda() if use_cuda else ith_answer_variable
                 textAttention = myAttentions[sample_group, :]
 
-                ith_image = input_images[sample_group, :, :, :]
+                ith_image = image_batch[sample_group, :, :, :]
                 ith_images_variable = Variable(torch.FloatTensor(ith_image))
                 ith_images_variable = ith_images_variable.cuda() if use_cuda else ith_images_variable
 
@@ -124,7 +125,7 @@ class end2endModuleNet(nn.Module):
                             (policy_gradient_losses, current_policy_gradient_loss))
 
         try:
-            if input_answers is not None:
+            if label_batch is not None:
                 total_loss, avg_answer_loss = self.layout_criterion(neg_entropy=neg_entropy,
                                                                     answer_loss=answer_losses,
                                                                     policy_gradient_losses=policy_gradient_losses,

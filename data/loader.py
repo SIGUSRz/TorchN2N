@@ -56,7 +56,7 @@ class VQAset(Dataset):
         self.vocab = VocabDict(data_path + vocab_question_file)
         self.question_array = np.zeros((self.hyper.T_encoder, self.num_samples), np.int32)
         self.seq_length_array = np.zeros(self.num_samples, np.int32)
-        self.gt_layout_array = np.zeros((self.hyper.T_encoder, self.num_samples), np.int32)
+        self.gt_layout_array = np.zeros((self.hyper.T_decoder, self.num_samples), np.int32)
         self.label_array = np.zeros(self.num_samples, np.int32)
         self.transform = transforms.ToTensor()
         for pt in range(self.num_samples):
@@ -66,7 +66,7 @@ class VQAset(Dataset):
                 self.question_array[t, pt] = self.vocab.word2idx_dict[tokens[t]]
             self.label_array[pt] = training_labels[pt]
             self.gt_layout_array[:, pt] = assembler.module_list2tokens(
-                gt_layout_list[pt], self.hyper.T_encoder)
+                gt_layout_list[pt], self.hyper.T_decoder)
 
     def __getitem__(self, idx):
         image = self.transform(self.image_array[idx, :, :, :])
